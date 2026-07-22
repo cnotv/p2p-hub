@@ -1,6 +1,6 @@
 {
   "name": "P2P Hub",
-  "description": "A peer-to-peer connection hub that manages rooms, tracks connected users, and exposes an API for other plugins to build on top of P2P functionality.",
+  "description": "A peer-to-peer connection hub that manages rooms, tracks connected users, and exposes an API for other plugins to build on top of P2P functionality. Remembers your username locally and lets you connect peers via shareable URLs.",
   "emoji": "🛰️",
   "entry": "index.html"
 }
