@@ -119,22 +119,63 @@
 (function(){
   'use strict';
 
-  // ---------- Persistence (in-memory fallback; localStorage may be blocked in sandbox) ----------
-  const STORE_KEY='p2phub-username';
-  function loadStoredName(){
-    try{ return window.localStorage.getItem(STORE_KEY)||null; }catch(e){ return memStore.name; }
+  // ---------- Builder-Shell storage bridge (BS) with localStorage fallback ----------
+  // BS is expected to expose: BS.ready (Promise), BS.get(key), BS.set(key,value).
+  // When running standalone (no BS present), we fall back to localStorage, and if that
+  // is blocked (sandboxed iframe) we fall back to an in-memory store.
+  const STORE_KEY='p2phub-profile';
+  const memStore={};
+
+  const BS = (function(){
+    // Detect a builder-shell provided bridge on window or parent.
+    let bridge=null;
+    try{ if(window.BS && typeof window.BS==='object') bridge=window.BS; }catch(e){}
+    if(!bridge){ try{ if(window.builderShell && window.builderShell.storage) bridge=window.builderShell.storage; }catch(e){} }
+
+    if(bridge){
+      return {
+        available:true,
+        ready: Promise.resolve(bridge.ready).then(()=>bridge).catch(()=>bridge),
+        async get(k){ try{ return await bridge.get(k); }catch(e){ return null; } },
+        async set(k,v){ try{ return await bridge.set(k,v); }catch(e){} }
+      };
+    }
+
+    // Fallback: localStorage or in-memory.
+    function lsGet(k){
+      try{ return window.localStorage.getItem(k); }catch(e){ return (k in memStore)?memStore[k]:null; }
+    }
+    function lsSet(k,v){
+      try{ window.localStorage.setItem(k,v); }catch(e){ memStore[k]=v; }
+    }
+    return {
+      available:false,
+      ready: Promise.resolve(),
+      async get(k){ return lsGet(k); },
+      async set(k,v){ lsSet(k,v); }
+    };
+  })();
+
+  async function loadStoredProfile(){
+    try{
+      await BS.ready;
+      const raw=await BS.get(STORE_KEY);
+      if(!raw) return null;
+      if(typeof raw==='object') return raw;
+      try{ return JSON.parse(raw); }catch(e){ return {name:String(raw)}; }
+    }catch(e){ return null; }
   }
-  function saveStoredName(n){
-    try{ window.localStorage.setItem(STORE_KEY,n); }catch(e){ memStore.name=n; }
+  async function saveStoredProfile(){
+    const data={ name:profile.name, status:profile.status, share:profile.share, room:profile.room };
+    try{ await BS.ready; await BS.set(STORE_KEY, JSON.stringify(data)); }catch(e){}
   }
-  const memStore={name:null};
 
   // ---------- Identity ----------
   const myId = 'u' + Math.random().toString(36).slice(2,9);
   const colors=['#e06c75','#61afef','#98c379','#c678dd','#d19a66','#56b6c2','#e5c07b'];
   const myColor=colors[Math.floor(Math.random()*colors.length)];
-  const storedName=loadStoredName();
-  let profile={ id:myId, name:storedName||('User-'+myId.slice(1,4)), color:myColor, status:'', share:true, room:'general' };
+  let profile={ id:myId, name:('User-'+myId.slice(1,4)), color:myColor, status:'', share:true, room:'general' };
+  let restoredFromStorage=false;
 
   const rooms=['general','games'];
   let currentRoom='general';
@@ -153,8 +194,6 @@
   function log(m){const d=document.createElement('div');d.textContent='['+new Date().toLocaleTimeString()+'] '+m;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
 
   // ---------- Connect-link encoding ----------
-  // Encode the SDP description into a URL-safe fragment. This is not "secret" but avoids
-  // pasting raw JSON blobs; the link carries the offer/answer in a compact form.
   function encodeSig(desc){
     try{
       const json=JSON.stringify(desc);
@@ -165,9 +204,7 @@
   function decodeSig(str){
     if(!str)return null;
     let raw=String(str).trim();
-    // try raw JSON first (backward compatible)
     try{ const d=JSON.parse(raw); if(d&&d.type)return d; }catch(e){}
-    // extract fragment after # or after connect
     let frag=raw;
     const hashIdx=raw.indexOf('#');
     if(hashIdx>=0) frag=raw.slice(hashIdx+1);
@@ -187,7 +224,7 @@
       const el=document.createElement('div');
       el.className='room'+(r===currentRoom?' active':'');
       el.innerHTML='# '+esc(r)+'<span class="badge">'+count+'</span>';
-      el.onclick=()=>{currentRoom=r;profile.room=r;broadcastPresence();renderRooms();renderUsers();notifySubscribers();};
+      el.onclick=()=>{currentRoom=r;profile.room=r;saveStoredProfile();broadcastPresence();renderRooms();renderUsers();notifySubscribers();};
       roomListEl.appendChild(el);
     });
   }
@@ -304,11 +341,12 @@
   $('#shareToggle').onclick=()=>{profile.share=!profile.share;$('#shareBox').textContent=profile.share?'☑':'☐';};
   $('#saveProfile').onclick=()=>{
     const n=$('#pName').value.trim();
-    if(n){ profile.name=n; saveStoredName(n); }
+    if(n){ profile.name=n; }
     profile.status=$('#pStatus').value.trim();
+    saveStoredProfile();
     pm.classList.remove('show');
     broadcastPresence();renderRooms();renderUsers();notifySubscribers();
-    log('profile updated (username saved)');
+    log('profile updated (saved to '+(BS.available?'builder-shell storage':'local fallback')+')');
   };
 
   // ---------- Plugin subscriber API (postMessage) ----------
@@ -327,9 +365,10 @@
       try{(ev.source||window).postMessage({type:'p2p-self',self:profile},'*');}catch(e){}
       notifySubscribers();
     } else if(d.type==='p2p-set-data'){
-      if(d.name){ profile.name=d.name; saveStoredName(d.name); }
+      if(d.name){ profile.name=d.name; }
       if(typeof d.data!=='undefined')profile.status=(typeof d.data==='string')?d.data:JSON.stringify(d.data);
       if(typeof d.share==='boolean')profile.share=d.share;
+      saveStoredProfile();
       broadcastPresence();renderUsers();notifySubscribers();
     } else if(d.type==='p2p-send'){
       const room=d.room||currentRoom;
@@ -342,7 +381,22 @@
 
   // ---------- Init ----------
   renderRooms();renderUsers();
-  log('Hub ready. ID '+myId+'. Username '+(storedName?'restored from storage':'auto-generated')+'. Share connect links to link peers.');
+  log('Hub ready. ID '+myId+'. Loading stored profile...');
+
+  (async function init(){
+    const stored=await loadStoredProfile();
+    if(stored && typeof stored==='object'){
+      if(stored.name) profile.name=stored.name;
+      if(typeof stored.status==='string') profile.status=stored.status;
+      if(typeof stored.share==='boolean') profile.share=stored.share;
+      if(stored.room){ profile.room=stored.room; if(!rooms.includes(stored.room))rooms.push(stored.room); currentRoom=stored.room; }
+      restoredFromStorage=true;
+    }
+    idStatus.textContent=profile.name+' · '+myId;
+    renderRooms();renderUsers();notifySubscribers();
+    log('Profile '+(restoredFromStorage?'restored from '+(BS.available?'builder-shell storage':'local fallback'):'auto-generated (no saved data)')+'. Share connect links to link peers.');
+  })();
+
   window.addEventListener('beforeunload',()=>{const m=JSON.stringify({t:'bye',id:profile.id});connections.forEach(c=>{if(c.channel&&c.channel.readyState==='open'){try{c.channel.send(m);}catch(e){}}});});
 
   window.P2PHub={ getUsers:allUsers, getSelf:()=>profile, send:broadcastApp, rooms };
