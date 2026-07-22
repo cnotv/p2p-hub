@@ -186,7 +186,7 @@
       const count=Object.values(peers).filter(p=>p.room===r).length + (profile.room===r?1:0);
       const el=document.createElement('div');
       el.className='room'+(r===currentRoom?' active':'');
-      el.innerHTML='# '+r+'<span class="badge">'+count+'</span>';
+      el.innerHTML='# '+esc(r)+'<span class="badge">'+count+'</span>';
       el.onclick=()=>{currentRoom=r;profile.room=r;broadcastPresence();renderRooms();renderUsers();notifySubscribers();};
       roomListEl.appendChild(el);
     });
