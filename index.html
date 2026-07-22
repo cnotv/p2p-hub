@@ -50,6 +50,7 @@
   .apis{padding:10px 12px;font-size:11px;color:var(--muted)}
   .apis code{background:var(--panel2);padding:1px 4px;border-radius:3px;color:var(--acc)}
   .toggle{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-top:8px;cursor:pointer}
+  .sighint{font-size:11px;color:var(--muted);margin:4px 0}
 </style>
 </head>
 <body>
@@ -84,13 +85,16 @@
   <div class="content">
     <div class="users" id="users"></div>
     <div class="signal" id="signalPanel" style="display:none">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Manual signaling (no server). Share offer/answer to link peers.</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Manual signaling (no server). Share the generated <b>connect link</b> with a peer to link up — no secure info is exposed in the raw.</div>
       <div class="row">
-        <button class="small" id="makeOffer">Create Offer</button>
-        <button class="small" id="acceptOffer">Accept Remote</button>
+        <button class="small" id="makeOffer">Create Invite Link</button>
+        <button class="small" id="acceptOffer">Use Remote Link</button>
+        <button class="small" id="copyLink">Copy Link</button>
       </div>
-      <textarea id="localSig" placeholder="your offer/answer appears here" readonly></textarea>
-      <textarea id="remoteSig" placeholder="paste remote offer/answer here"></textarea>
+      <div class="sighint">Your invite / reply link (share this URL):</div>
+      <textarea id="localSig" placeholder="your connect link appears here" readonly></textarea>
+      <div class="sighint">Paste the peer's link here:</div>
+      <textarea id="remoteSig" placeholder="paste remote connect link here"></textarea>
     </div>
     <div class="log" id="log"></div>
   </div>
@@ -115,19 +119,29 @@
 (function(){
   'use strict';
 
+  // ---------- Persistence (in-memory fallback; localStorage may be blocked in sandbox) ----------
+  const STORE_KEY='p2phub-username';
+  function loadStoredName(){
+    try{ return window.localStorage.getItem(STORE_KEY)||null; }catch(e){ return memStore.name; }
+  }
+  function saveStoredName(n){
+    try{ window.localStorage.setItem(STORE_KEY,n); }catch(e){ memStore.name=n; }
+  }
+  const memStore={name:null};
+
   // ---------- Identity ----------
   const myId = 'u' + Math.random().toString(36).slice(2,9);
   const colors=['#e06c75','#61afef','#98c379','#c678dd','#d19a66','#56b6c2','#e5c07b'];
   const myColor=colors[Math.floor(Math.random()*colors.length)];
-  let profile={ id:myId, name:'User-'+myId.slice(1,4), color:myColor, status:'', share:true, room:'general' };
+  const storedName=loadStoredName();
+  let profile={ id:myId, name:storedName||('User-'+myId.slice(1,4)), color:myColor, status:'', share:true, room:'general' };
 
   const rooms=['general','games'];
   let currentRoom='general';
 
-  // peers: id -> {conn info}
   const peers={};        // remote peer meta
   const connections=[];  // RTCPeerConnection wrappers
-  const subscribers=new Set(); // external plugin windows (we use parent + self broadcasting)
+  const subscribers=new Set();
 
   // ---------- DOM ----------
   const $=s=>document.querySelector(s);
@@ -137,6 +151,33 @@
   idStatus.textContent=profile.name+' · '+myId;
 
   function log(m){const d=document.createElement('div');d.textContent='['+new Date().toLocaleTimeString()+'] '+m;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
+
+  // ---------- Connect-link encoding ----------
+  // Encode the SDP description into a URL-safe fragment. This is not "secret" but avoids
+  // pasting raw JSON blobs; the link carries the offer/answer in a compact form.
+  function encodeSig(desc){
+    try{
+      const json=JSON.stringify(desc);
+      const b64=btoa(unescape(encodeURIComponent(json))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+      return 'p2phub://connect#'+b64;
+    }catch(e){return '';}
+  }
+  function decodeSig(str){
+    if(!str)return null;
+    let raw=String(str).trim();
+    // try raw JSON first (backward compatible)
+    try{ const d=JSON.parse(raw); if(d&&d.type)return d; }catch(e){}
+    // extract fragment after # or after connect
+    let frag=raw;
+    const hashIdx=raw.indexOf('#');
+    if(hashIdx>=0) frag=raw.slice(hashIdx+1);
+    frag=frag.replace(/-/g,'+').replace(/_/g,'/');
+    while(frag.length%4)frag+='=';
+    try{
+      const json=decodeURIComponent(escape(atob(frag)));
+      return JSON.parse(json);
+    }catch(e){return null;}
+  }
 
   // ---------- Rooms ----------
   function renderRooms(){
@@ -183,7 +224,7 @@
 
   // ---------- WebRTC manual signaling ----------
   const rtcConfig={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
-  let pendingPC=null, pendingChannel=null;
+  let pendingPC=null;
 
   function wireChannel(ch){
     ch.onopen=()=>{log('data channel open');setStatus(true);broadcastPresence();};
@@ -198,14 +239,11 @@
     if(msg.t==='presence'){
       peers[msg.id]={id:msg.id,name:msg.name,color:msg.color,status:msg.status,share:msg.share,room:msg.room};
       renderRooms();renderUsers();notifySubscribers();
-      // reply presence so bidirectional
       if(msg.reply!==false) sendPresence(ch,false);
     } else if(msg.t==='bye'){
       delete peers[msg.id];renderRooms();renderUsers();notifySubscribers();
     } else if(msg.t==='app'){
-      // relay to subscribers (other plugins)
       relayToSubscribers({type:'p2p-message',from:msg.id,room:msg.room,payload:msg.payload});
-      // rebroadcast? keep simple: no forwarding mesh
     }
   }
 
@@ -228,27 +266,35 @@
     const pc=new RTCPeerConnection(rtcConfig);
     const ch=pc.createDataChannel('hub');
     wireChannel(ch);
-    pc.onicecandidate=e=>{if(!e.candidate)$('#localSig').value=JSON.stringify(pc.localDescription);};
+    pc.onicecandidate=e=>{if(!e.candidate)$('#localSig').value=encodeSig(pc.localDescription);};
     const off=await pc.createOffer();await pc.setLocalDescription(off);
     pendingPC=pc;
-    log('offer created — share it, then paste answer & Accept Remote');
+    log('invite link generating — share it, then paste reply link & Use Remote Link');
   };
 
   $('#acceptOffer').onclick=async()=>{
-    const raw=$('#remoteSig').value.trim();if(!raw){alert('Paste remote signal first');return;}
-    let desc;try{desc=JSON.parse(raw);}catch(e){alert('invalid signal');return;}
+    const raw=$('#remoteSig').value.trim();if(!raw){alert('Paste remote connect link first');return;}
+    const desc=decodeSig(raw);
+    if(!desc||!desc.type){alert('invalid connect link');return;}
     if(desc.type==='answer' && pendingPC){
       await pendingPC.setRemoteDescription(desc);
-      log('answer applied — connecting...');
+      log('reply link applied — connecting...');
       pendingPC=null;
     } else if(desc.type==='offer'){
       const pc=new RTCPeerConnection(rtcConfig);
       pc.ondatachannel=e=>wireChannel(e.channel);
-      pc.onicecandidate=e=>{if(!e.candidate)$('#localSig').value=JSON.stringify(pc.localDescription);};
+      pc.onicecandidate=e=>{if(!e.candidate)$('#localSig').value=encodeSig(pc.localDescription);};
       await pc.setRemoteDescription(desc);
       const ans=await pc.createAnswer();await pc.setLocalDescription(ans);
-      log('answer created — share it back to offerer');
-    } else {alert('Need an offer or answer');}
+      log('reply link generating — share it back to the inviter');
+    } else {alert('Need an invite or reply link');}
+  };
+
+  $('#copyLink').onclick=async()=>{
+    const v=$('#localSig').value.trim();
+    if(!v){alert('Nothing to copy yet — create an invite link first');return;}
+    try{ await navigator.clipboard.writeText(v); log('connect link copied to clipboard'); }
+    catch(e){ $('#localSig').focus(); $('#localSig').select(); log('select the link and copy manually'); }
   };
 
   // ---------- Profile ----------
@@ -257,11 +303,12 @@
   $('#cancelProfile').onclick=()=>pm.classList.remove('show');
   $('#shareToggle').onclick=()=>{profile.share=!profile.share;$('#shareBox').textContent=profile.share?'☑':'☐';};
   $('#saveProfile').onclick=()=>{
-    const n=$('#pName').value.trim();if(n)profile.name=n;
+    const n=$('#pName').value.trim();
+    if(n){ profile.name=n; saveStoredName(n); }
     profile.status=$('#pStatus').value.trim();
     pm.classList.remove('show');
     broadcastPresence();renderRooms();renderUsers();notifySubscribers();
-    log('profile updated');
+    log('profile updated (username saved)');
   };
 
   // ---------- Plugin subscriber API (postMessage) ----------
@@ -280,14 +327,13 @@
       try{(ev.source||window).postMessage({type:'p2p-self',self:profile},'*');}catch(e){}
       notifySubscribers();
     } else if(d.type==='p2p-set-data'){
-      if(d.name)profile.name=d.name;
+      if(d.name){ profile.name=d.name; saveStoredName(d.name); }
       if(typeof d.data!=='undefined')profile.status=(typeof d.data==='string')?d.data:JSON.stringify(d.data);
       if(typeof d.share==='boolean')profile.share=d.share;
       broadcastPresence();renderUsers();notifySubscribers();
     } else if(d.type==='p2p-send'){
       const room=d.room||currentRoom;
       broadcastApp(room,d.payload);
-      // echo locally to subscribers so sender's UI reflects
       relayToSubscribers({type:'p2p-message',from:profile.id,room:room,payload:d.payload});
     } else if(d.type==='p2p-get-users'){
       try{(ev.source||window).postMessage({type:'p2p-users',room:currentRoom,users:allUsers()},'*');}catch(e){}
@@ -296,10 +342,9 @@
 
   // ---------- Init ----------
   renderRooms();renderUsers();
-  log('Hub ready. ID '+myId+'. Manual WebRTC signaling available. Other plugins may subscribe.');
+  log('Hub ready. ID '+myId+'. Username '+(storedName?'restored from storage':'auto-generated')+'. Share connect links to link peers.');
   window.addEventListener('beforeunload',()=>{const m=JSON.stringify({t:'bye',id:profile.id});connections.forEach(c=>{if(c.channel&&c.channel.readyState==='open'){try{c.channel.send(m);}catch(e){}}});});
 
-  // expose a tiny global for same-document usage/testing
   window.P2PHub={ getUsers:allUsers, getSelf:()=>profile, send:broadcastApp, rooms };
 })();
 </script>
