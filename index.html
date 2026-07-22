@@ -119,47 +119,43 @@
 (function(){
   'use strict';
 
-  // ---------- Builder-Shell storage bridge (BS) with localStorage fallback ----------
-  // BS is expected to expose: BS.ready (Promise), BS.get(key), BS.set(key,value).
-  // When running standalone (no BS present), we fall back to localStorage, and if that
-  // is blocked (sandboxed iframe) we fall back to an in-memory store.
+  // ---------- Builder-Shell storage bridge (BS) ----------
+  // When embedded in the builder-shell sandboxed iframe (opaque origin), localStorage
+  // THROWS on access, so we must use the postMessage-based storage bridge to the parent.
+  // When running standalone (not embedded), we fall back to localStorage, and if that
+  // is also blocked for some reason, to an in-memory store so the plugin still works.
   const STORE_KEY='p2phub-profile';
   const memStore={};
 
-  const BS = (function(){
-    // Detect a builder-shell provided bridge on window or parent.
-    let bridge=null;
-    try{ if(window.BS && typeof window.BS==='object') bridge=window.BS; }catch(e){}
-    if(!bridge){ try{ if(window.builderShell && window.builderShell.storage) bridge=window.builderShell.storage; }catch(e){} }
-
-    if(bridge){
-      return {
-        available:true,
-        ready: Promise.resolve(bridge.ready).then(()=>bridge).catch(()=>bridge),
-        async get(k){ try{ return await bridge.get(k); }catch(e){ return null; } },
-        async set(k,v){ try{ return await bridge.set(k,v); }catch(e){} }
-      };
-    }
-
-    // Fallback: localStorage or in-memory.
-    function lsGet(k){
-      try{ return window.localStorage.getItem(k); }catch(e){ return (k in memStore)?memStore[k]:null; }
-    }
-    function lsSet(k,v){
-      try{ window.localStorage.setItem(k,v); }catch(e){ memStore[k]=v; }
-    }
-    return {
-      available:false,
-      ready: Promise.resolve(),
-      async get(k){ return lsGet(k); },
-      async set(k,v){ lsSet(k,v); }
+  const BS=(()=>{
+    const emb=window.parent!==window;
+    let c={};
+    const ready=new Promise(res=>{
+      if(!emb)return res();
+      window.addEventListener("message",e=>{
+        if(e.source===window.parent&&e.data&&e.data.type==="bs-storage-data"){
+          c=e.data.data||{};res();
+        }
+      });
+      window.parent.postMessage({type:"bs-storage-load"},"*");
+      setTimeout(res,1000);
+    });
+    function safeLsGet(k){ try{ return window.localStorage.getItem(k); }catch(e){ return (k in memStore)?memStore[k]:null; } }
+    function safeLsSet(k,v){ try{ window.localStorage.setItem(k,v); }catch(e){ memStore[k]=v; } }
+    function safeLsRemove(k){ try{ window.localStorage.removeItem(k); }catch(e){ delete memStore[k]; } }
+    return{
+      available: emb, // true = using builder-shell bridge, false = local fallback
+      ready,
+      get:k=> emb ? (k in c ? c[k] : null) : safeLsGet(k),
+      set:(k,v)=>{ if(emb){ c[k]=String(v); window.parent.postMessage({type:"bs-storage-set",key:k,value:String(v)},"*"); } else safeLsSet(k,v); },
+      remove:k=>{ if(emb){ delete c[k]; window.parent.postMessage({type:"bs-storage-remove",key:k},"*"); } else safeLsRemove(k); }
     };
   })();
 
   async function loadStoredProfile(){
     try{
       await BS.ready;
-      const raw=await BS.get(STORE_KEY);
+      const raw=BS.get(STORE_KEY);
       if(!raw) return null;
       if(typeof raw==='object') return raw;
       try{ return JSON.parse(raw); }catch(e){ return {name:String(raw)}; }
@@ -167,7 +163,7 @@
   }
   async function saveStoredProfile(){
     const data={ name:profile.name, status:profile.status, share:profile.share, room:profile.room };
-    try{ await BS.ready; await BS.set(STORE_KEY, JSON.stringify(data)); }catch(e){}
+    try{ await BS.ready; BS.set(STORE_KEY, JSON.stringify(data)); }catch(e){}
   }
 
   // ---------- Identity ----------
@@ -346,7 +342,7 @@
     saveStoredProfile();
     pm.classList.remove('show');
     broadcastPresence();renderRooms();renderUsers();notifySubscribers();
-    log('profile updated (saved to '+(BS.available?'builder-shell storage':'local fallback')+')');
+    log('profile updated (saved via '+(BS.available?'builder-shell storage bridge':'local fallback')+')');
   };
 
   // ---------- Plugin subscriber API (postMessage) ----------
@@ -360,6 +356,7 @@
 
   window.addEventListener('message',ev=>{
     const d=ev.data;if(!d||typeof d!=='object')return;
+    if(d.type==='bs-storage-data'||d.type==='bs-storage-set'||d.type==='bs-storage-load'||d.type==='bs-storage-remove')return; // handled by BS bridge itself
     if(d.type==='p2p-subscribe'){
       if(ev.source)subscribers.add(ev.source);
       try{(ev.source||window).postMessage({type:'p2p-self',self:profile},'*');}catch(e){}
@@ -394,7 +391,7 @@
     }
     idStatus.textContent=profile.name+' · '+myId;
     renderRooms();renderUsers();notifySubscribers();
-    log('Profile '+(restoredFromStorage?'restored from '+(BS.available?'builder-shell storage':'local fallback'):'auto-generated (no saved data)')+'. Share connect links to link peers.');
+    log('Profile '+(restoredFromStorage?'restored from '+(BS.available?'builder-shell storage bridge':'local fallback'):'auto-generated (no saved data)')+'. Share connect links to link peers.');
   })();
 
   window.addEventListener('beforeunload',()=>{const m=JSON.stringify({t:'bye',id:profile.id});connections.forEach(c=>{if(c.channel&&c.channel.readyState==='open'){try{c.channel.send(m);}catch(e){}}});});
