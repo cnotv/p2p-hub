@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>P2P Hub</title>
+<style>
+  :root{
+    --bg:#0e1116;--panel:#161b22;--panel2:#1c232d;--acc:#3fb950;--acc2:#58a6ff;
+    --txt:#e6edf3;--muted:#8b949e;--border:#30363d;--danger:#f85149;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--txt);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+  header{padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;display:flex;align-items:center;gap:8px}
+  .status{font-size:11px;padding:3px 8px;border-radius:12px;background:var(--panel2);color:var(--muted)}
+  .status.on{color:var(--acc);background:rgba(63,185,80,.12)}
+  .main{flex:1;display:flex;min-height:0}
+  .sidebar{width:230px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto}
+  .section{padding:10px 12px;border-bottom:1px solid var(--border)}
+  .section h2{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 8px}
+  .room{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:14px}
+  .room:hover{background:var(--panel2)}
+  .room.active{background:rgba(88,166,255,.15);color:var(--acc2)}
+  .room .badge{margin-left:auto;font-size:10px;background:var(--panel2);padding:1px 6px;border-radius:8px;color:var(--muted)}
+  .content{flex:1;display:flex;flex-direction:column;min-width:0}
+  .users{padding:12px;overflow-y:auto;flex:1}
+  .userCard{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;display:flex;align-items:flex-start;gap:10px}
+  .avatar{width:38px;height:38px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:600;color:#fff;font-size:15px}
+  .uinfo{flex:1;min-width:0}
+  .uname{font-weight:600;display:flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--acc)}
+  .dot.me{background:var(--acc2)}
+  .umeta{font-size:12px;color:var(--muted);margin-top:3px;word-break:break-word}
+  .data{margin-top:6px;font-size:11px;background:var(--panel2);border-radius:6px;padding:6px 8px;color:var(--muted);white-space:pre-wrap;font-family:monospace}
+  .empty{color:var(--muted);text-align:center;padding:40px 10px;font-size:13px}
+  input,button,select{font-family:inherit}
+  input[type=text]{width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--txt);padding:7px 9px;border-radius:6px;font-size:13px}
+  button{cursor:pointer;background:var(--panel2);border:1px solid var(--border);color:var(--txt);padding:7px 10px;border-radius:6px;font-size:13px}
+  button.primary{background:var(--acc2);border-color:var(--acc2);color:#04121f;font-weight:600}
+  button.small{padding:4px 8px;font-size:11px}
+  .row{display:flex;gap:6px;margin-top:6px}
+  .signal{padding:12px;border-top:1px solid var(--border);background:var(--panel)}
+  textarea{width:100%;height:60px;background:var(--panel2);border:1px solid var(--border);color:var(--txt);border-radius:6px;font-size:11px;font-family:monospace;padding:6px;resize:vertical}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:20}
+  .modal.show{display:flex}
+  .modalBox{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px;width:320px;max-width:90vw}
+  .modalBox h3{margin:0 0 12px;font-size:15px}
+  .log{font-size:11px;color:var(--muted);max-height:80px;overflow-y:auto;padding:6px 12px;border-top:1px solid var(--border);font-family:monospace}
+  .apis{padding:10px 12px;font-size:11px;color:var(--muted)}
+  .apis code{background:var(--panel2);padding:1px 4px;border-radius:3px;color:var(--acc)}
+  .toggle{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-top:8px;cursor:pointer}
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰️ P2P Hub</h1>
+  <span class="status" id="connStatus">offline</span>
+  <span class="status" id="idStatus"></span>
+  <div style="margin-left:auto;display:flex;gap:6px">
+    <button class="small" id="editProfileBtn">Edit Profile</button>
+    <button class="small" id="signalBtn">Connect Peer</button>
+  </div>
+</header>
+<div class="main">
+  <div class="sidebar">
+    <div class="section">
+      <h2>Rooms</h2>
+      <div id="roomList"></div>
+      <div class="row">
+        <input type="text" id="newRoom" placeholder="new room...">
+        <button class="small" id="addRoom">+</button>
+      </div>
+    </div>
+    <div class="section apis">
+      <h2>Plugin API</h2>
+      Other plugins can <code>postMessage</code> to this hub:<br>
+      <code>{type:'p2p-subscribe'}</code><br>
+      <code>{type:'p2p-send',room,payload}</code><br>
+      <code>{type:'p2p-set-data',data}</code><br>
+      Receive: <code>p2p-users</code>, <code>p2p-message</code>, <code>p2p-self</code>.
+    </div>
+  </div>
+  <div class="content">
+    <div class="users" id="users"></div>
+    <div class="signal" id="signalPanel" style="display:none">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Manual signaling (no server). Share offer/answer to link peers.</div>
+      <div class="row">
+        <button class="small" id="makeOffer">Create Offer</button>
+        <button class="small" id="acceptOffer">Accept Remote</button>
+      </div>
+      <textarea id="localSig" placeholder="your offer/answer appears here" readonly></textarea>
+      <textarea id="remoteSig" placeholder="paste remote offer/answer here"></textarea>
+    </div>
+    <div class="log" id="log"></div>
+  </div>
+</div>
+
+<div class="modal" id="profileModal">
+  <div class="modalBox">
+    <h3>Your Profile</h3>
+    <label style="font-size:12px;color:var(--muted)">Name</label>
+    <input type="text" id="pName" placeholder="your name">
+    <label style="font-size:12px;color:var(--muted);margin-top:10px;display:block">Shared status/data (visible to peers if allowed)</label>
+    <input type="text" id="pStatus" placeholder="e.g. available for games">
+    <div class="toggle" id="shareToggle"><span id="shareBox">☑</span> Allow peers to see my shared data</div>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" id="saveProfile">Save</button>
+      <button id="cancelProfile">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  // ---------- Identity ----------
+  const myId = 'u' + Math.random().toString(36).slice(2,9);
+  const colors=['#e06c75','#61afef','#98c379','#c678dd','#d19a66','#56b6c2','#e5c07b'];
+  const myColor=colors[Math.floor(Math.random()*colors.length)];
+  let profile={ id:myId, name:'User-'+myId.slice(1,4), color:myColor, status:'', share:true, room:'general' };
+
+  const rooms=['general','games'];
+  let currentRoom='general';
+
+  // peers: id -> {conn info}
+  const peers={};        // remote peer meta
+  const connections=[];  // RTCPeerConnection wrappers
+  const subscribers=new Set(); // external plugin windows (we use parent + self broadcasting)
+
+  // ---------- DOM ----------
+  const $=s=>document.querySelector(s);
+  const usersEl=$('#users'), roomListEl=$('#roomList'), logEl=$('#log');
+  const connStatus=$('#connStatus'), idStatus=$('#idStatus');
+
+  idStatus.textContent=profile.name+' · '+myId;
+
+  function log(m){const d=document.createElement('div');d.textContent='['+new Date().toLocaleTimeString()+'] '+m;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;}
+
+  // ---------- Rooms ----------
+  function renderRooms(){
+    roomListEl.innerHTML='';
+    rooms.forEach(r=>{
+      const count=Object.values(peers).filter(p=>p.room===r).length + (profile.room===r?1:0);
+      const el=document.createElement('div');
+      el.className='room'+(r===currentRoom?' active':'');
+      el.innerHTML='# '+r+'<span class="badge">'+count+'</span>';
+      el.onclick=()=>{currentRoom=r;profile.room=r;broadcastPresence();renderRooms();renderUsers();notifySubscribers();};
+      roomListEl.appendChild(el);
+    });
+  }
+  $('#addRoom').onclick=()=>{
+    const v=$('#newRoom').value.trim();
+    if(v && !rooms.includes(v)){rooms.push(v);$('#newRoom').value='';renderRooms();}
+  };
+  $('#newRoom').addEventListener('keydown',e=>{if(e.key==='Enter')$('#addRoom').click();});
+
+  // ---------- Users ----------
+  function allUsers(){
+    const list=[{...profile, me:true}];
+    Object.values(peers).forEach(p=>list.push({...p, me:false}));
+    return list;
+  }
+  function renderUsers(){
+    const list=allUsers().filter(u=>u.room===currentRoom);
+    usersEl.innerHTML='';
+    if(list.length===0){usersEl.innerHTML='<div class="empty">No one in #'+currentRoom+' yet.<br>Use "Connect Peer" to link.</div>';return;}
+    list.forEach(u=>{
+      const card=document.createElement('div');card.className='userCard';
+      const av=document.createElement('div');av.className='avatar';av.style.background=u.color||'#555';
+      av.textContent=(u.name||'?').slice(0,2).toUpperCase();
+      const info=document.createElement('div');info.className='uinfo';
+      const showData = u.me || u.share;
+      info.innerHTML='<div class="uname"><span class="dot '+(u.me?'me':'')+'"></span>'+esc(u.name)+(u.me?' <span style="font-size:10px;color:var(--muted)">(you)</span>':'')+'</div>'+
+        '<div class="umeta">'+esc(u.id)+' · #'+esc(u.room)+'</div>'+
+        (showData?('<div class="data">'+esc(u.status||'(no shared data)')+'</div>'):'<div class="data">🔒 data private</div>');
+      card.appendChild(av);card.appendChild(info);
+      usersEl.appendChild(card);
+    });
+  }
+  function esc(s){return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+  // ---------- WebRTC manual signaling ----------
+  const rtcConfig={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
+  let pendingPC=null, pendingChannel=null;
+
+  function wireChannel(ch){
+    ch.onopen=()=>{log('data channel open');setStatus(true);broadcastPresence();};
+    ch.onclose=()=>{log('channel closed');refreshStatus();};
+    ch.onmessage=e=>{try{handleWire(JSON.parse(e.data),ch);}catch(err){}};
+    connections.push({channel:ch});
+  }
+  function setStatus(on){connStatus.textContent=on?'connected':'offline';connStatus.classList.toggle('on',on);}
+  function refreshStatus(){const any=connections.some(c=>c.channel&&c.channel.readyState==='open');setStatus(any);}
+
+  function handleWire(msg,ch){
+    if(msg.t==='presence'){
+      peers[msg.id]={id:msg.id,name:msg.name,color:msg.color,status:msg.status,share:msg.share,room:msg.room};
+      renderRooms();renderUsers();notifySubscribers();
+      // reply presence so bidirectional
+      if(msg.reply!==false) sendPresence(ch,false);
+    } else if(msg.t==='bye'){
+      delete peers[msg.id];renderRooms();renderUsers();notifySubscribers();
+    } else if(msg.t==='app'){
+      // relay to subscribers (other plugins)
+      relayToSubscribers({type:'p2p-message',from:msg.id,room:msg.room,payload:msg.payload});
+      // rebroadcast? keep simple: no forwarding mesh
+    }
+  }
+
+  function sendPresence(ch,reply){
+    const m={t:'presence',reply:reply,id:profile.id,name:profile.name,color:profile.color,status:profile.share?profile.status:'',share:profile.share,room:profile.room};
+    try{ch.send(JSON.stringify(m));}catch(e){}
+  }
+  function broadcastPresence(){
+    connections.forEach(c=>{if(c.channel&&c.channel.readyState==='open')sendPresence(c.channel,true);});
+    idStatus.textContent=profile.name+' · '+myId;
+  }
+  function broadcastApp(room,payload){
+    const m=JSON.stringify({t:'app',id:profile.id,room:room,payload:payload});
+    connections.forEach(c=>{if(c.channel&&c.channel.readyState==='open')c.channel.send(m);});
+  }
+
+  $('#signalBtn').onclick=()=>{const p=$('#signalPanel');p.style.display=p.style.display==='none'?'block':'none';};
+
+  $('#makeOffer').onclick=async()=>{
+    const pc=new RTCPeerConnection(rtcConfig);
+    const ch=pc.createDataChannel('hub');
+    wireChannel(ch);
+    pc.onicecandidate=e=>{if(!e.candidate)$('#localSig').value=JSON.stringify(pc.localDescription);};
+    const off=await pc.createOffer();await pc.setLocalDescription(off);
+    pendingPC=pc;
+    log('offer created — share it, then paste answer & Accept Remote');
+  };
+
+  $('#acceptOffer').onclick=async()=>{
+    const raw=$('#remoteSig').value.trim();if(!raw){alert('Paste remote signal first');return;}
+    let desc;try{desc=JSON.parse(raw);}catch(e){alert('invalid signal');return;}
+    if(desc.type==='answer' && pendingPC){
+      await pendingPC.setRemoteDescription(desc);
+      log('answer applied — connecting...');
+      pendingPC=null;
+    } else if(desc.type==='offer'){
+      const pc=new RTCPeerConnection(rtcConfig);
+      pc.ondatachannel=e=>wireChannel(e.channel);
+      pc.onicecandidate=e=>{if(!e.candidate)$('#localSig').value=JSON.stringify(pc.localDescription);};
+      await pc.setRemoteDescription(desc);
+      const ans=await pc.createAnswer();await pc.setLocalDescription(ans);
+      log('answer created — share it back to offerer');
+    } else {alert('Need an offer or answer');}
+  };
+
+  // ---------- Profile ----------
+  const pm=$('#profileModal');
+  $('#editProfileBtn').onclick=()=>{$('#pName').value=profile.name;$('#pStatus').value=profile.status;$('#shareBox').textContent=profile.share?'☑':'☐';pm.classList.add('show');};
+  $('#cancelProfile').onclick=()=>pm.classList.remove('show');
+  $('#shareToggle').onclick=()=>{profile.share=!profile.share;$('#shareBox').textContent=profile.share?'☑':'☐';};
+  $('#saveProfile').onclick=()=>{
+    const n=$('#pName').value.trim();if(n)profile.name=n;
+    profile.status=$('#pStatus').value.trim();
+    pm.classList.remove('show');
+    broadcastPresence();renderRooms();renderUsers();notifySubscribers();
+    log('profile updated');
+  };
+
+  // ---------- Plugin subscriber API (postMessage) ----------
+  function relayToSubscribers(msg){
+    subscribers.forEach(w=>{try{w.postMessage(msg,'*');}catch(e){}});
+    try{window.parent&&window.parent!==window&&window.parent.postMessage(msg,'*');}catch(e){}
+  }
+  function notifySubscribers(){
+    relayToSubscribers({type:'p2p-users',room:currentRoom,users:allUsers()});
+  }
+
+  window.addEventListener('message',ev=>{
+    const d=ev.data;if(!d||typeof d!=='object')return;
+    if(d.type==='p2p-subscribe'){
+      if(ev.source)subscribers.add(ev.source);
+      try{(ev.source||window).postMessage({type:'p2p-self',self:profile},'*');}catch(e){}
+      notifySubscribers();
+    } else if(d.type==='p2p-set-data'){
+      if(d.name)profile.name=d.name;
+      if(typeof d.data!=='undefined')profile.status=(typeof d.data==='string')?d.data:JSON.stringify(d.data);
+      if(typeof d.share==='boolean')profile.share=d.share;
+      broadcastPresence();renderUsers();notifySubscribers();
+    } else if(d.type==='p2p-send'){
+      const room=d.room||currentRoom;
+      broadcastApp(room,d.payload);
+      // echo locally to subscribers so sender's UI reflects
+      relayToSubscribers({type:'p2p-message',from:profile.id,room:room,payload:d.payload});
+    } else if(d.type==='p2p-get-users'){
+      try{(ev.source||window).postMessage({type:'p2p-users',room:currentRoom,users:allUsers()},'*');}catch(e){}
+    }
+  });
+
+  // ---------- Init ----------
+  renderRooms();renderUsers();
+  log('Hub ready. ID '+myId+'. Manual WebRTC signaling available. Other plugins may subscribe.');
+  window.addEventListener('beforeunload',()=>{const m=JSON.stringify({t:'bye',id:profile.id});connections.forEach(c=>{if(c.channel&&c.channel.readyState==='open'){try{c.channel.send(m);}catch(e){}}});});
+
+  // expose a tiny global for same-document usage/testing
+  window.P2PHub={ getUsers:allUsers, getSelf:()=>profile, send:broadcastApp, rooms };
+})();
+</script>
+</body>
+</html>
