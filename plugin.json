@@ -1,6 +1,6 @@
 {
   "name": "P2P Hub",
-  "description": "A peer-to-peer connection hub that manages rooms, tracks connected users, and exposes an API for other plugins to build on top of P2P functionality. Persists your profile/preferences via the builder-shell storage bridge (postMessage-based, safe in sandboxed opaque-origin iframes where localStorage throws) and lets you connect peers via shareable URLs.",
+  "description": "A peer-to-peer connection hub that manages rooms, tracks connected users, and exposes an API for other plugins to build on top of P2P functionality. Persists your profile/preferences via the builder-shell storage bridge (postMessage-based, safe in sandboxed opaque-origin iframes where localStorage throws), lets you connect peers via shareable URLs, and emits live status updates to the shell.",
   "emoji": "🛰️",
   "entry": "index.html"
 }
