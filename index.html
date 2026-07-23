@@ -166,6 +166,27 @@
     try{ await BS.ready; BS.set(STORE_KEY, JSON.stringify(data)); }catch(e){}
   }
 
+  // ---------- Shell status emitter ----------
+  // Emits a lightweight status snapshot up to the builder-shell (and any parent host)
+  // so the shell chrome can display live plugin status (e.g. connection state, peer
+  // count, current room) without needing to poll into the iframe.
+  let lastEmittedStatus=null;
+  function emitStatus(){
+    const online = connections.some(c=>c.channel&&c.channel.readyState==='open');
+    const peerCount = Object.keys(peers).length;
+    const text = online
+      ? (peerCount+' peer'+(peerCount!==1?'s':'')+' online · #'+currentRoom)
+      : 'offline · #'+currentRoom;
+    const detail={ online, peerCount, room:currentRoom, id:myId, name:profile.name, share:profile.share };
+    const key=text+'|'+JSON.stringify(detail);
+    if(key===lastEmittedStatus)return; // avoid spamming identical updates
+    lastEmittedStatus=key;
+    const msg={ type:'bs-status', status:online?'ok':'idle', text, detail };
+    try{ window.parent && window.parent!==window && window.parent.postMessage(msg,'*'); }catch(e){}
+    // Also relay to any subscribed plugins that might care about hub status
+    try{ relayToSubscribers({type:'p2p-status', text, detail}); }catch(e){}
+  }
+
   // ---------- Identity ----------
   const myId = 'u' + Math.random().toString(36).slice(2,9);
   const colors=['#e06c75','#61afef','#98c379','#c678dd','#d19a66','#56b6c2','#e5c07b'];
@@ -220,7 +241,7 @@
       const el=document.createElement('div');
       el.className='room'+(r===currentRoom?' active':'');
       el.innerHTML='# '+esc(r)+'<span class="badge">'+count+'</span>';
-      el.onclick=()=>{currentRoom=r;profile.room=r;saveStoredProfile();broadcastPresence();renderRooms();renderUsers();notifySubscribers();};
+      el.onclick=()=>{currentRoom=r;profile.room=r;saveStoredProfile();broadcastPresence();renderRooms();renderUsers();notifySubscribers();emitStatus();};
       roomListEl.appendChild(el);
     });
   }
@@ -265,16 +286,16 @@
     ch.onmessage=e=>{try{handleWire(JSON.parse(e.data),ch);}catch(err){}};
     connections.push({channel:ch});
   }
-  function setStatus(on){connStatus.textContent=on?'connected':'offline';connStatus.classList.toggle('on',on);}
+  function setStatus(on){connStatus.textContent=on?'connected':'offline';connStatus.classList.toggle('on',on);emitStatus();}
   function refreshStatus(){const any=connections.some(c=>c.channel&&c.channel.readyState==='open');setStatus(any);}
 
   function handleWire(msg,ch){
     if(msg.t==='presence'){
       peers[msg.id]={id:msg.id,name:msg.name,color:msg.color,status:msg.status,share:msg.share,room:msg.room};
-      renderRooms();renderUsers();notifySubscribers();
+      renderRooms();renderUsers();notifySubscribers();emitStatus();
       if(msg.reply!==false) sendPresence(ch,false);
     } else if(msg.t==='bye'){
-      delete peers[msg.id];renderRooms();renderUsers();notifySubscribers();
+      delete peers[msg.id];renderRooms();renderUsers();notifySubscribers();emitStatus();
     } else if(msg.t==='app'){
       relayToSubscribers({type:'p2p-message',from:msg.id,room:msg.room,payload:msg.payload});
     }
@@ -287,6 +308,7 @@
   function broadcastPresence(){
     connections.forEach(c=>{if(c.channel&&c.channel.readyState==='open')sendPresence(c.channel,true);});
     idStatus.textContent=profile.name+' · '+myId;
+    emitStatus();
   }
   function broadcastApp(room,payload){
     const m=JSON.stringify({t:'app',id:profile.id,room:room,payload:payload});
@@ -341,7 +363,7 @@
     profile.status=$('#pStatus').value.trim();
     saveStoredProfile();
     pm.classList.remove('show');
-    broadcastPresence();renderRooms();renderUsers();notifySubscribers();
+    broadcastPresence();renderRooms();renderUsers();notifySubscribers();emitStatus();
     log('profile updated (saved via '+(BS.available?'builder-shell storage bridge':'local fallback')+')');
   };
 
@@ -366,7 +388,7 @@
       if(typeof d.data!=='undefined')profile.status=(typeof d.data==='string')?d.data:JSON.stringify(d.data);
       if(typeof d.share==='boolean')profile.share=d.share;
       saveStoredProfile();
-      broadcastPresence();renderUsers();notifySubscribers();
+      broadcastPresence();renderUsers();notifySubscribers();emitStatus();
     } else if(d.type==='p2p-send'){
       const room=d.room||currentRoom;
       broadcastApp(room,d.payload);
@@ -379,6 +401,7 @@
   // ---------- Init ----------
   renderRooms();renderUsers();
   log('Hub ready. ID '+myId+'. Loading stored profile...');
+  emitStatus();
 
   (async function init(){
     const stored=await loadStoredProfile();
@@ -392,9 +415,17 @@
     idStatus.textContent=profile.name+' · '+myId;
     renderRooms();renderUsers();notifySubscribers();
     log('Profile '+(restoredFromStorage?'restored from '+(BS.available?'builder-shell storage bridge':'local fallback'):'auto-generated (no saved data)')+'. Share connect links to link peers.');
+    emitStatus();
   })();
 
-  window.addEventListener('beforeunload',()=>{const m=JSON.stringify({t:'bye',id:profile.id});connections.forEach(c=>{if(c.channel&&c.channel.readyState==='open'){try{c.channel.send(m);}catch(e){}}});});
+  // Periodic heartbeat so the shell's status area stays fresh even without state changes
+  setInterval(emitStatus,15000);
+
+  window.addEventListener('beforeunload',()=>{
+    const m=JSON.stringify({t:'bye',id:profile.id});
+    connections.forEach(c=>{if(c.channel&&c.channel.readyState==='open'){try{c.channel.send(m);}catch(e){}}});
+    try{ window.parent && window.parent!==window && window.parent.postMessage({type:'bs-status', status:'idle', text:'offline', detail:{online:false,peerCount:0,room:currentRoom,id:myId,name:profile.name}}, '*'); }catch(e){}
+  });
 
   window.P2PHub={ getUsers:allUsers, getSelf:()=>profile, send:broadcastApp, rooms };
 })();
